@@ -72,7 +72,7 @@ export function ComposerVisibilityMenu({
           <DropdownMenuContent align="end">
             <DropdownMenuItem
               onClick={() => {
-                if (visibility === "protected") return;
+                if (visibility === "private") return;
                 onVisibilityChange("private");
               }}
             >
@@ -81,7 +81,7 @@ export function ComposerVisibilityMenu({
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={() => {
-                if (visibility !== "protected") return;
+                if (visibility === "protected") return;
                 onVisibilityChange("protected");
               }}
             >
