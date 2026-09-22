@@ -1,40 +1,38 @@
-# 自托管 fork 的手动生产部署。只响应 workflow_dispatch，不在 push 时发布。
-# 上游仓库 realchendahuang/FlareMo 不会跑这个 job。
-# 真正执行的仍是仓库里的 `pnpm deploy`：构建前端、远端 D1 migration、再 wrangler deploy。
+# 此个人实例由所有者明确授权 main push 自动部署；见 docs/personal-deployment.md。
+# 只使用既有资源和线上密钥，不创建资源、不重新初始化管理员。
 name: Deploy to Cloudflare
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build, wrangler dry-run, and read-only resource check; skip D1 migration, publish, and secret sync"
+        description: "Run checks and build only; skip D1 migration and publishing"
         required: false
         type: boolean
         default: false
-      provision:
-        description: "Create missing D1, R2, Queue, and Vectorize resources"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: flaremo-cloudflare-deploy
+  group: flaremo-personal-production
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: github.repository != 'realchendahuang/FlareMo'
+    if: github.repository == 'xiaohu65/FlareMo' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       CI: "true"
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      WRANGLER_SEND_METRICS: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Check Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           if [[ -z "${CLOUDFLARE_API_TOKEN}" ]]; then
@@ -47,6 +45,8 @@ jobs:
           fi
 
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
 
@@ -58,39 +58,48 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Write wrangler.jsonc
+      - name: Validate and write this instance's configuration
         env:
           WRANGLER_JSONC: ${{ secrets.WRANGLER_JSONC }}
-          FLAREMO_D1_DATABASE_ID: ${{ secrets.FLAREMO_D1_DATABASE_ID }}
-          FLAREMO_PUBLIC_URL: ${{ vars.FLAREMO_PUBLIC_URL || secrets.FLAREMO_PUBLIC_URL }}
-          FLAREMO_DEPLOY_REPOSITORY: ${{ vars.FLAREMO_DEPLOY_REPOSITORY }}
-        run: node ./scripts/write-wrangler-config.mjs
-
-      - name: Provision / verify Cloudflare resources
         run: |
-          set -euo pipefail
-          if [[ "${{ inputs.provision }}" == "true" && "${{ inputs.dry_run }}" != "true" ]]; then
-            pnpm provision:remote
-          else
-            pnpm provision:remote -- --check
-          fi
+          node ./scripts/personal-deploy-check.mjs config
+          node ./scripts/write-wrangler-config.mjs
+
+      - name: Format and type checks
+        run: |
+          pnpm format:check
+          pnpm check
+
+      - name: Deployment script tests
+        run: >-
+          node --test
+          ./scripts/personal-deploy-check.test.mjs
+          ./scripts/provision-cloudflare.test.mjs
+          ./scripts/write-wrangler-config.test.mjs
+          ./scripts/smoke-check.test.mjs
+
+      - name: Verify existing resources and authentication secret
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          pnpm provision:remote -- --check
+          pnpm exec wrangler d1 migrations list DB --remote --config ./wrangler.jsonc
+          node ./scripts/personal-deploy-check.mjs secrets
+
+      - name: Confirm the existing instance is initialized
+        run: node ./scripts/personal-deploy-check.mjs smoke
+
+      - name: Build and deployment dry run
+        run: pnpm deploy:dry-run
 
       - name: Deploy
-        run: |
-          set -euo pipefail
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
-            pnpm deploy:dry-run
-          else
-            pnpm deploy
-          fi
-
-      - name: Sync Worker secrets
         if: ${{ inputs.dry_run != true }}
         env:
-          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
-          FLAREMO_BOOTSTRAP_SECRET: ${{ secrets.FLAREMO_BOOTSTRAP_SECRET }}
-        run: pnpm secrets:sync
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: pnpm deploy
 
       - name: Smoke check deployed site
         if: ${{ inputs.dry_run != true }}
-        run: pnpm smoke:check
+        run: |
+          pnpm smoke:check
+          node ./scripts/personal-deploy-check.mjs smoke
