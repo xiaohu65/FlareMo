@@ -72,11 +72,11 @@ export function useWorkspaceQueries({
   // or the capability itself is disabled server-side.
   const semanticEnabled = useMemo(() => {
     const plan = vectorUsageQuery.data?.plan;
-    if (!plan) return false;
+    if (!plan || vectorUsageQuery.data?.provider === "none") return false;
     const limit =
       plan.user?.limits.semanticSearchQueriesPerMonth ??
       plan.limits.semanticSearchQueriesPerMonth;
-    return typeof limit === "number" && limit > 0;
+    return limit === null || (typeof limit === "number" && limit > 0);
   }, [vectorUsageQuery.data]);
 
   const isSemanticSearch =
